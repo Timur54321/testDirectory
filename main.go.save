@@ -53,36 +53,32 @@ func handleStream(s network.Stream) {
 }
 
 func bridgeStreams(a, b network.Stream) {
-	var once sync.Once
-
-	closeBoth := func() {
-		a.Reset()
-		b.Reset()
-	}
+	log.Println("Starting bidirectional bridge")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-
-		_, err := io.Copy(a, b)
-		log.Println("a -> b closed:", err)
-
-		once.Do(closeBoth)
+		io.Copy(b, a)
 	}()
 
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(b, a)
-		log.Println("b -> a closed:", err)
-
-		once.Do(closeBoth)
+		io.Copy(a, b)
 	}()
 
 	wg.Wait()
 
-	log.Println("bridge finished")
+	log.Println("Bridge finished, closing streams")
+
+	a.Close()
+	b.Close()
+
+	mu.Lock()
+	stream1 = nil
+	stream2 = nil
+	mu.Unlock()
 }
 
 func main() {
@@ -120,13 +116,6 @@ func startPeer(_ context.Context, h host.Host, streamHandler network.StreamHandl
 	h.SetStreamHandlerMatch(fileExistProtocolID, func (prot protocol.ID) bool {
 		return strings.HasPrefix(string(prot), fileExistProtocolID)
 	}, checkFileExistance)
-	h.Network().Notify(&network.NotifyBundle{
-		DisconnectedF: func(_ network.Network, c  network.Conn) {
-			peerID := c.RemotePeer().String()
-			log.Printf("Peer %s was disconnected", peerID)
-			delete(registeredConns, peerID)
-		},
-	})
 
 	var port string
 	for _, la := range h.Network().ListenAddresses() {
@@ -149,7 +138,6 @@ func startPeer(_ context.Context, h host.Host, streamHandler network.StreamHandl
 
 func registerStream(s network.Stream) {
 	log.Println("Registered a new connection")
-	log.Print(registeredConns)
 	registeredConns[s.Conn().RemotePeer().String()] = s
 }
 
@@ -174,7 +162,6 @@ func getPublicMedia(s network.Stream) {
 		log.Printf("Requesting media from %s", peerID)
 		str.Write([]byte("GF"))
 		var length uint32
-		s.Write([]byte("new file"))
 		binary.Read(str, binary.BigEndian, &length)
 
 		data := make([]byte, length)
@@ -185,7 +172,6 @@ func getPublicMedia(s network.Stream) {
 
 		log.Printf("Media from %s was sent", peerID)
 	}
-	s.Write([]byte("no files"))
 
 }
 
@@ -244,8 +230,6 @@ func takeFile(s network.Stream) {
 			break
 		}
 	}
-
-	delete(registeredStreams, string(transitionID))
 	// get transition id from stream
 	// check if it exists
 	// get stream from existing object
